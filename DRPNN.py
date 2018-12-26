@@ -4,18 +4,9 @@ import numpy as np
 import time
 import tensorflow as tf
 
-os.environ['TF_CPP_MIN_VLOG_LEVEL'] = '1'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
+os.environ['TF_CPP_MIN_VLOG_LEVEL'] = '2'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
-def logging_time(original_function):
-    def wrapper_function(*args, **kwargs):
-        start_time = time.time()
-        result = original_function(*args, **kwargs)
-        print('-------- {}: {:.3f} sec -------'.format(original_function.__name__, (time.time()-start_time)))
-        return result
-    return wrapper_function
-
-# @logging_time    
 class DRPNN:
     def __init__(self, X_units, S_units,
                  batch_size=100,
@@ -42,11 +33,10 @@ class DRPNN:
         self.gpu_list = gpu_list
         self.gpu_memory_fraction = gpu_memory_fraction
         
-        ## Set random seed
+        # Set random seed
         if random_state:
             tf.set_random_seed(random_state)
     
-    @logging_time
     def fit(self, X_train, I_train, S_train, Y_train,
             X_valid, I_valid, S_valid, Y_valid,
             training_steps,
@@ -220,7 +210,6 @@ class DRPNN:
         history['valid']['loss'] = history['valid']['loss'][1:]
         return history
     
-    @logging_time
     def predict(self, X_test, S_test, threshold=0.5):
         # dummy input data
         I_test = np.zeros((X_test.shape[0],), dtype=np.int32) + 999
@@ -262,7 +251,6 @@ class DRPNN:
         self._close_session()
         return np.array(outputs, dtype=np.uint8)
     
-    @logging_time
     def predict_proba(self, X_test, S_test):
         # dummy input data
         I_test = np.zeros((X_test.shape[0],), dtype=np.int32) + 999
@@ -330,22 +318,20 @@ class DRPNN:
         return kernel_dict
         
     def _create_graph(self, output_types, output_shapes):
-        ## tf.Placeholder
+        # tf.Placeholder
         self.handle = tf.placeholder(tf.string, shape=[])
         self.training = tf.placeholder(dtype=bool, name='training_placeholder')
         self.threshold = tf.placeholder(dtype=tf.float32, name='threshold_placeholder')
-        ## tf.Iterator
+        # tf.Iterator
         iterator = tf.data.Iterator.from_string_handle(string_handle=self.handle,
                                                        output_types=output_types,
                                                        output_shapes=output_shapes)
         X_batch, I_batch, S_batch, Y_batch = iterator.get_next()
 
-        ## Activation function
-        # nonlinear = tf.nn.relu # ACC: 0.666, AUC: 0.5
-        # nonlinear = tf.nn.tanh # ACC: 0.708, AUC: 0.741
-        nonlinear = tf.nn.sigmoid # ACC: 0.762, AUC: 0.785
+        # Activation function
+        nonlinear = tf.nn.sigmoid
         
-        ## Model
+        # Model
         dense0    = tf.layers.dense(inputs=X_batch, units=self.S_units, activation='linear', name='dense0')
         activate0 = nonlinear(dense0, name='activate0')
         dense1    = tf.layers.dense(inputs=tf.multiply(S_batch, activate0), units=self.hidden_units, activation='linear', name='dense1')
@@ -355,53 +341,53 @@ class DRPNN:
         bn2       = tf.layers.batch_normalization(dense2, training=self.training, name='batchnormalization2')
         activate2 = nonlinear(bn2, name='activate2')
         
-        ## Output
+        # Output
         O_first  = tf.expand_dims(tf.reduce_sum(tf.multiply(dense0, tf.one_hot(I_batch, depth=self.S_units)), 1), axis=-1)
         O_second = tf.layers.dense(inputs=activate2, units=1, activation='linear', name='output')
         
-        ## LOSS
+        # LOSS
         LOSS_first = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=O_first, labels=tf.cast(Y_batch, dtype=tf.float32)))
         LOSS_second = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=O_second, labels=tf.cast(Y_batch, dtype=tf.float32)))
         self.LOSS = self.alpha*LOSS_first + (1. - self.alpha)*LOSS_second
         
-        ## OPTIMIZER 1st
+        # OPTIMIZER 1st
         OPT_first = tf.train.FtrlOptimizer(learning_rate=self.learning_rate_first,
                                            l1_regularization_strength=self.l1_regularization_strength,
                                            l2_regularization_strength=self.l2_regularization_strength)
         var_list_first = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'dense0')
-        ## OPTIMIZER 2nd
+        # OPTIMIZER 2nd
         OPT_second = tf.train.AdamOptimizer(learning_rate=self.learning_rate_second)
         var_list_second = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'dense1')
         var_list_second += tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'dense2')
         var_list_second += tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'output')
         var_list_second += tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'batchnormalization1')
         var_list_second += tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'batchnormalization2')
-        ## MINIMIZATION
+        # MINIMIZATION
         update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
         with tf.control_dependencies(update_ops):
             self.TRAIN_first = OPT_first.minimize(self.LOSS, var_list=var_list_first)
             self.TRAIN_second = OPT_second.minimize(self.LOSS, var_list=var_list_second)
         
-        ## PREDICTION
+        # PREDICTION
         self.P_second = tf.sigmoid(O_second)
         self.Y_second = tf.cast(self.P_second > self.threshold, tf.uint8)
-        ## ACCURACY
+        # ACCURACY
         self.ACCURACY_second = tf.metrics.accuracy(labels=Y_batch, predictions=self.Y_second)
-        ## AUC-ROC
+        # AUC-ROC
         self.AUCROC_second = tf.metrics.auc(labels=Y_batch, predictions=self.P_second, curve='ROC')
         
-        ## SAVE AND RESTORE
+        # SAVE AND RESTORE
         self.saver = tf.train.Saver()
         
     def _open_session(self):
-        ## Create a new session
+        # Create a new session
         tf.reset_default_graph()
         if self.gpu_use:
-            ## GPU
+            # GPU
             gpu_options = tf.GPUOptions(visible_device_list=self.gpu_list, per_process_gpu_memory_fraction=self.gpu_memory_fraction)
             self.sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
         else:
-            ## CPU
+            # CPU
             self.sess = tf.Session()
         
     def _close_session(self):

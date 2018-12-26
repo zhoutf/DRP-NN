@@ -10,21 +10,24 @@ from DRPNN import DRPNN
 
 def get_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument('-d', '--trainingdataset', type=str, default='GDSC', help="default='GDSC'")
     parser.add_argument('-o', '--outputdir', type=str, default='output_cv', help="default='output_cv'")
     parser.add_argument('-g', '--gpuuse', action='store_true', help="If not given, tensorflow processes with only CPU")
-    parser.add_argument('-l', '--gpulist', type=str, default="0", help="default='0'")
-    parser.add_argument('-f', '--gpumemoryfraction', type=float, default=0.4, help="default=0.4")
-    parser.add_argument('-d', '--dataset', type=str, default='GDSC', help="default='GDSC'")
     return parser.parse_args()
     
 def main():
     args = get_args()
     print(args)
     
-    # Dataset
-    if args.dataset == "GDSC":
-        drugresponseFile = "data/drugResponse_GDSC.txt"
-        expressionFile = "data/geneExpression_GDSC.txt"
+    # Check whether the output directory exists
+    if not os.path.exists(args.outputdir):
+        os.makedirs(args.outputdir)
+    
+    # Define parameters
+    if args.trainingdataset == "GDSC":
+        # Training
+        drugresponseFile = "data/response_GDSC.csv"
+        expressionFile = "data/expression_GDSC.csv"
         fingerprintFile = "data/fingerprint_GDSC.csv"
         # Hyperparameters
         BATCH_SIZE = 100
@@ -33,9 +36,10 @@ def main():
         LEARNING_RATE_SECOND = 2.6e-03
         L1_REGULARIZATION_STRENGTH = 1.6e-03
         L2_REGULARIZATION_STRENGTH = 2.5e-03
-    elif args.dataset == "CCLE":
-        drugresponseFile = "data/drugResponse_CCLE.txt"
-        expressionFile = "data/geneExpression_CCLE.txt"
+    elif args.trainingdataset == "CCLE":
+        # Training
+        drugresponseFile = "data/response_CCLE.csv"
+        expressionFile = "data/expression_CCLE.csv"
         fingerprintFile = "data/fingerprint_CCLE.csv"
         # Hyperparameters
         BATCH_SIZE = 100
@@ -48,49 +52,50 @@ def main():
         print("Please enter either GDSC or CCLE")
         exit(1)
     
-
+    
     ########################################################
     ## 1. Read data
     ########################################################
+    # time check
+    start_time = time.time()
+    # Read training and test datasets
     dataset = DATASET(drugresponseFile, expressionFile, fingerprintFile)
+    # Log
     print('N_data: {}'.format(len(dataset)))
     print('N_drugs: {}'.format(len(dataset.get_drugs(unique=True))))
     print('N_cells: {}'.format(len(dataset.get_cells(unique=True))))
     print('N_genes: {}'.format(len(dataset.get_genes())))
     print('N_sensitivity: {}'.format(np.count_nonzero(dataset.get_labels()==0)))
     print('N_resistance: {}'.format(np.count_nonzero(dataset.get_labels()==1)))
+    
+    
     ########################################################
-    ## 2. Define outputs
+    ## 2. K-fold cross-validation
     ########################################################
+    # Initialize results
     reals = dataset.get_labels()
     preds = np.zeros_like(reals)
     probs = np.zeros_like(reals, dtype=np.float32)
     tprs = []
     aucs = []
     mean_fpr = np.linspace(0, 1, 100)
-    ########################################################
-    ## 3. Split data into training and test
-    ########################################################
+    
+    # Create a new directory for checkpoint
+    if not os.path.exists('checkpoint'):
+        os.makedirs('checkpoint')
+    
+    # K-fold cross-validation
     kf = StratifiedKFold(n_splits=5, shuffle=True, random_state=2019)
     for k, (idx_train, idx_test) in enumerate(kf.split(X=np.zeros(len(dataset)), y=dataset.get_labels())):
+        print("-------- K fold cross validation {}/{} --------".format(k, kf.get_n_splits()))
+        # Split into training and validation
         idx_train, idx_valid = train_test_split(idx_train, test_size=0.2, random_state=2019, stratify=dataset.get_labels()[idx_train])
+        
         # Make input data
         X_train, X_valid, X_test = dataset.make_xdata(idx_train, idx_valid, idx_test)
-        print('X_train.shape:', X_train.shape)
-        print('X_valid.shape:', X_valid.shape)
-        print('X_test.shape:', X_test.shape)
         I_train, I_valid, I_test = dataset.make_idata(idx_train, idx_valid, idx_test)
-        print('I_train.shape:', I_train.shape)
-        print('I_valid.shape:', I_valid.shape)
-        print('I_test.shape:', I_test.shape)
         S_train, S_valid, S_test = dataset.make_sdata(idx_train, idx_valid, idx_test)
-        print('S_train.shape:', S_train.shape)
-        print('S_valid.shape:', S_valid.shape)
-        print('S_test.shape:', S_test.shape)
         Y_train, Y_valid, Y_test = dataset.make_ydata(idx_train, idx_valid, idx_test)
-        print('Y_train.shape:', Y_train.shape)
-        print('Y_valid.shape:', Y_valid.shape)
-        print('Y_test.shape:', Y_test.shape) 
         
         # Create a neural network
         model = DRPNN(X_units=X_train.shape[1],
@@ -101,8 +106,8 @@ def main():
                       learning_rate_second=LEARNING_RATE_SECOND,
                       l1_regularization_strength=L1_REGULARIZATION_STRENGTH,
                       l2_regularization_strength=L2_REGULARIZATION_STRENGTH,
-                      checkpoint_path="checkpoint/{}_fold{}.ckpt".format(args.dataset, k),
-                      gpu_use=args.gpuuse, gpu_list=args.gpulist, gpu_memory_fraction=args.gpumemoryfraction,
+                      checkpoint_path="checkpoint/{}_fold{}.ckpt".format(args.trainingdataset, k),
+                      gpu_use=args.gpuuse, gpu_list="0", gpu_memory_fraction="0.95",
                       random_state=2019)
     
         # Fit using mini-batch
@@ -112,9 +117,9 @@ def main():
                             training_steps=(steps_per_epoch * 250),
                             earlystop_use=True, patience=20, earlystop_free_step=(steps_per_epoch*4),
                             checkpoint_step=(steps_per_epoch*2),
-                            display_step=(steps_per_epoch*2))
+                            display_step=(steps_per_epoch*1))
         
-        ## Predict labels
+        # Predict labels
         preds_test = model.predict(X_test, S_test)
         probs_test = model.predict_proba(X_test, S_test)
     
@@ -123,62 +128,42 @@ def main():
         for idx, probability in zip(idx_test, probs_test):
             probs[idx] = probability[0]
         
-        ## Accuracy
+        # Accuracy
         acc = np.count_nonzero(Y_test.flatten() == preds_test.flatten()) / Y_test.shape[0]
         print("ACC[test]: {:.3f}".format(acc))
         
-        ## ROC curve        
+        # ROC curve        
         fpr, tpr, threshold = roc_curve(Y_test, probs_test)
         tprs.append(np.interp(mean_fpr, fpr, tpr))
         tprs[-1][0] = 0.0
         tprs[-1][-1] = 1.0
         roc_auc = auc(mean_fpr, tprs[-1])
         aucs.append(roc_auc)
-        print("ROC_AUC[test]: {:.3f}".format(roc_auc))
-        
-        ## train loss
-        with open(os.path.join(args.outputdir, '{}_train_loss_fold{}.txt'.format(args.dataset,k)), 'w') as fout:
-            fout.write('STEP\tLOSS\n')
-            for (step, loss_train) in history['train']['loss']:
-                fout.write('{:5d}\t{}\n'.format(step,loss_train))
-                
-        ## valid acc, auc
-        with open(os.path.join(args.outputdir, '{}_valid_acc_auc_fold{}.txt'.format(args.dataset,k)), 'w') as fout:
-            fout.write('STEP\tACC\tAUC\n')
-            for (step, acc_valid), (_, auc_valid) in zip(history['valid']['acc'], history['valid']['auc']):
-                fout.write('{:5d}\t{}\t{}\n'.format(step,acc_valid,auc_valid))
-        
-        ## roc curve
-        with open(os.path.join(args.outputdir, '{}_roc_curve_fold{}.txt'.format(args.dataset,k)), 'w') as fout:
-            fout.write('FPR\tTPR\n')
-            for fp, tp in zip(mean_fpr, tprs[-1]):
-                fout.write('{:.6f}\t{:.6f}\n'.format(fp, tp))
-                
-        ## results    
-        with open(os.path.join(args.outputdir, '{}_predictions_fold{}.txt'.format(args.dataset,k)), 'w') as fout:
-            fout.write('Cell\tDrug\tReal\tPrediction\n')
-            for cell, drug, real, pred in zip(dataset.get_cells()[idx_test], dataset.get_drugs()[idx_test], Y_test.flatten(), probs_test.flatten()):
-                fout.write('{}\t{}\t{:.6f}\t{:.6f}\n'.format(cell,drug,real,pred))
-        print("----------------------------------------------------------------")
+        print("AUROC[test]: {:.3f}".format(roc_auc))
     
+    
+    print("-------- Final results ------------------------")
     ACC = np.count_nonzero(reals==preds) / reals.shape[0]
     mean_tpr = np.mean(tprs, axis=0)
     mean_auc = auc(mean_fpr, mean_tpr)
-    std_auc = np.std(aucs)
-    print("ACC: {:.3f}".format(ACC))
-    print("AUC: {:.3f}".format(mean_auc))
+    print("mean_ACC: {:.3f}".format(ACC))
+    print("mean_AUC: {:.3f}".format(mean_auc))
     
-    ## roc curve
+    
+    ########################################################
+    ## 3. Save results
+    ########################################################
+    # roc curve
     with open(os.path.join(args.outputdir, 'roc_curve_{}.txt'.format(args.dataset)), 'w') as fout:
         fout.write('FPR\tTPR\n')
         for fp, tp in zip(mean_fpr, mean_tpr):
-            fout.write('{:.6f}\t{:.6f}\n'.format(fp, tp))
+            fout.write('{:.3f}\t{:.3f}\n'.format(fp, tp))
             
-    ## results    
+    # prediction results    
     with open(os.path.join(args.outputdir, 'predictions_{}.txt'.format(args.dataset)), 'w') as fout:
         fout.write('Cell\tDrug\tReal\tPrediction(1:Resistance,0:Sensitivity)\n')
         for cell, drug, real, prob in zip(dataset.get_cells(), dataset.get_drugs(), reals, probs):
-            fout.write('{}\t{}\t{:.6f}\t{:.6f}\n'.format(cell,drug,real,prob))
+            fout.write('{}\t{}\t{:.3f}\t{:.3f}\n'.format(cell,drug,real,prob))
 
     
    
@@ -186,9 +171,9 @@ class DATASET:
     def __init__(self, drfile, gefile, fpfile):
         ## 1. Read data
         # 1-1) Gene expression
-        self.ge = pd.read_csv(gefile, sep="\t", index_col=0)
+        self.ge = pd.read_csv(gefile, index_col=0)
         # 1-2) Drug response
-        self.dr = pd.read_csv(drfile, sep="\t", dtype='str')
+        self.dr = pd.read_csv(drfile, dtype='str')
         self.DRUGKEY = self.dr.columns[0]
         self.CELLKEY = self.dr.columns[1]
         self.LABELKEY = self.dr.columns[2]
