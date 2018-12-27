@@ -64,7 +64,7 @@ def main():
         print("Please enter either GDSC or CCLE")
         exit(1)
     
-	
+    
     ########################################################
     ## 1. Read data
     ########################################################
@@ -329,4 +329,6 @@ def show_dataset_information(trainingdataset, testdataset, dataset_train, datase
     print('[test] N_resistance: {}'.format(np.count_nonzero(dataset_test.get_labels()==1)))
     
 if __name__=="__main__":
+    start_time = time.time()
     main()
+    print('Total execution time: {:.0f} sec'.format(time.time() - start_time))

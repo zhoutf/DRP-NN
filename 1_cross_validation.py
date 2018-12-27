@@ -154,13 +154,13 @@ def main():
     ## 3. Save results
     ########################################################
     # roc curve
-    with open(os.path.join(args.outputdir, 'roc_curve_{}.txt'.format(args.dataset)), 'w') as fout:
+    with open(os.path.join(args.outputdir, 'roc_curve_{}.txt'.format(args.trainingdataset)), 'w') as fout:
         fout.write('FPR\tTPR\n')
         for fp, tp in zip(mean_fpr, mean_tpr):
             fout.write('{:.3f}\t{:.3f}\n'.format(fp, tp))
             
     # prediction results    
-    with open(os.path.join(args.outputdir, 'predictions_{}.txt'.format(args.dataset)), 'w') as fout:
+    with open(os.path.join(args.outputdir, 'predictions_{}.txt'.format(args.trainingdataset)), 'w') as fout:
         fout.write('Cell\tDrug\tReal\tPrediction(1:Resistance,0:Sensitivity)\n')
         for cell, drug, real, prob in zip(dataset.get_cells(), dataset.get_drugs(), reals, probs):
             fout.write('{}\t{}\t{:.3f}\t{:.3f}\n'.format(cell,drug,real,prob))
@@ -311,4 +311,6 @@ class DATASET:
 
   
 if __name__=="__main__":
+    start_time = time.time()
     main()
+    print('Total execution time: {:.0f} sec'.format(time.time() - start_time))
